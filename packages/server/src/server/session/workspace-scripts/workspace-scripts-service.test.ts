@@ -78,6 +78,8 @@ interface BuildOptions {
   spawnThrows?: string;
   gitService?: Pick<WorkspaceGitService, "peekSnapshot">;
   automationError?: Error;
+  wantsStatusUpdates?: () => boolean;
+  emitWorkspaceUpdateToAllSessions?: (workspaceId: string) => Promise<void>;
 }
 
 function buildService(options: BuildOptions = {}) {
@@ -108,6 +110,8 @@ function buildService(options: BuildOptions = {}) {
     resolveScriptHealth: null,
     logger,
     emit: (message) => emitted.push(message),
+    wantsStatusUpdates: options.wantsStatusUpdates,
+    emitWorkspaceUpdateToAllSessions: options.emitWorkspaceUpdateToAllSessions,
     async spawnWorkspaceScript(spawnOptions): Promise<WorktreeScriptResult> {
       spawnCalls.push(spawnOptions);
       if (options.spawnThrows) {
@@ -218,6 +222,73 @@ describe("emitStatusUpdate", () => {
   test("emits one script_status_update carrying the snapshot", async () => {
     const { service, emitted } = buildService();
     await service.emitStatusUpdate("ws-1", "/tmp/repo");
+    expect(emitted).toEqual([
+      { type: "script_status_update", payload: { workspaceId: "ws-1", scripts: [] } },
+    ]);
+  });
+});
+
+describe("lifecycle fan-out to other sessions", () => {
+  test("fans the workspace descriptor out even when this session declines script_status_update", async () => {
+    const fannedOut: string[] = [];
+    const { service, emitted } = buildService({
+      wantsStatusUpdates: () => false,
+      emitWorkspaceUpdateToAllSessions: async (workspaceId) => {
+        fannedOut.push(workspaceId);
+      },
+    });
+
+    await service.emitStatusUpdate("ws-1", "/tmp/repo");
+
+    expect(fannedOut).toEqual(["ws-1"]);
+    expect(emitted).toEqual([]);
+  });
+
+  test("fans out on launch and again when the launcher reports a later exit", async () => {
+    const fannedOut: string[] = [];
+    const { service, emitted, spawnCalls } = buildService({
+      emitWorkspaceUpdateToAllSessions: async (workspaceId) => {
+        fannedOut.push(workspaceId);
+      },
+    });
+
+    await service.start(request);
+    await expect.poll(() => fannedOut).toEqual(["ws-1"]);
+
+    // Simulate a natural exit after start() resolves.
+    spawnCalls[0]?.onLifecycleChanged?.();
+    await expect.poll(() => fannedOut).toEqual(["ws-1", "ws-1"]);
+    const statusUpdateCount = () =>
+      emitted.filter((message) => message.type === "script_status_update").length;
+    await expect.poll(statusUpdateCount).toBe(3);
+  });
+
+  test("requester status does not wait for peer delivery", async () => {
+    const peerDelivery = Promise.withResolvers<void>();
+    const { service, emitted } = buildService({
+      emitWorkspaceUpdateToAllSessions: () => peerDelivery.promise,
+    });
+
+    const statusUpdate = service.emitStatusUpdate("ws-1", "/tmp/repo");
+    try {
+      await expect
+        .poll(() => emitted)
+        .toEqual([{ type: "script_status_update", payload: { workspaceId: "ws-1", scripts: [] } }]);
+    } finally {
+      peerDelivery.resolve();
+      await statusUpdate;
+    }
+  });
+
+  test("a failed fan-out does not block the requester's status update", async () => {
+    const { service, emitted } = buildService({
+      emitWorkspaceUpdateToAllSessions: async () => {
+        throw new Error("workspace delivery failed");
+      },
+    });
+
+    await service.emitStatusUpdate("ws-1", "/tmp/repo");
+
     expect(emitted).toEqual([
       { type: "script_status_update", payload: { workspaceId: "ws-1", scripts: [] } },
     ]);

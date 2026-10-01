@@ -3,14 +3,19 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { createPaseoClient, type PaseoClient } from "@getpaseo/client";
+import { createPaseoClient, type PaseoClient, type DaemonEvent } from "@getpaseo/client";
+import type { WorkspaceScriptPayload } from "../messages.js";
 import { DaemonClient } from "../test-utils/daemon-client.js";
 import { createTestPaseoDaemon, type TestPaseoDaemon } from "../test-utils/paseo-daemon.js";
+
+const SCRIPT_NAME = "sleeper";
+const OBSERVE_TIMEOUT_MS = 15_000;
 
 let daemon: TestPaseoDaemon;
 let client: DaemonClient;
 let cwd: string;
 let sdk: PaseoClient;
+const cleanupClients = new Set<DaemonClient>();
 
 beforeEach(async () => {
   cwd = await mkdtemp(path.join(tmpdir(), "terminal-workspace-sdk-"));
@@ -22,6 +27,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await Promise.all(Array.from(cleanupClients, (peer) => peer.close()));
+  cleanupClients.clear();
   await client.close();
   await sdk.close();
   await daemon.close();
@@ -192,3 +199,150 @@ test("listing by workspace ID keeps terminals in a shared directory separate", a
     expect.objectContaining({ id: created.terminal?.id, workspaceId: second, cwd }),
   ]);
 });
+
+async function connectClient(): Promise<DaemonClient> {
+  const peer = new DaemonClient({ url: `ws://127.0.0.1:${daemon.port}/ws` });
+  cleanupClients.add(peer);
+  await peer.connect();
+  await peer.fetchAgents({ subscribe: {} });
+  return peer;
+}
+
+function recordScriptLifecycles(peer: DaemonClient) {
+  const updates: WorkspaceScriptPayload[] = [];
+  peer.subscribe((event: DaemonEvent) => {
+    if (event.type !== "workspace_update" || event.payload.kind !== "upsert") return;
+    const script = event.payload.workspace.scripts.find(
+      (entry) => entry.scriptName === SCRIPT_NAME,
+    );
+    if (!script) return;
+    updates.push(script);
+  });
+  return updates;
+}
+
+test("workspace script lifecycle reaches other subscribed clients and only them", async () => {
+  await writeFile(
+    path.join(cwd, "paseo.json"),
+    JSON.stringify({
+      scripts: {
+        [SCRIPT_NAME]: { type: "script", command: 'node -e "setInterval(() => {}, 1000)"' },
+      },
+    }),
+  );
+
+  const observer = await connectClient();
+  const unsubscribed = await connectClient();
+  await client.fetchWorkspaces({ subscribe: {} });
+  await observer.fetchWorkspaces({ subscribe: {} });
+
+  const observed = recordScriptLifecycles(observer);
+  const bystander: string[] = [];
+  unsubscribed.subscribe((event: DaemonEvent) => {
+    if (event.type === "workspace_update") bystander.push(event.workspaceId);
+  });
+
+  const opened = await client.openProject(cwd);
+  expect(opened.error).toBeNull();
+  const workspaceId = opened.workspace!.id;
+
+  // Exclude the initial stopped state from the lifecycle assertions.
+  await expect.poll(() => observed[0]?.lifecycle, { timeout: OBSERVE_TIMEOUT_MS }).toBe("stopped");
+  const afterCreate = observed.length;
+
+  const started = await client.startWorkspaceScriptWithStatus(workspaceId, SCRIPT_NAME);
+  expect(started.error).toBeNull();
+  expect(started.script?.lifecycle).toBe("running");
+  await expect
+    .poll(() => observed[afterCreate]?.lifecycle, { timeout: OBSERVE_TIMEOUT_MS })
+    .toBe("running");
+
+  const stopped = await client.stopWorkspaceScript(workspaceId, SCRIPT_NAME);
+  expect(stopped.error).toBeNull();
+  expect(stopped.script?.lifecycle).toBe("stopped");
+  await expect
+    .poll(() => observed[afterCreate + 1]?.lifecycle, { timeout: OBSERVE_TIMEOUT_MS })
+    .toBe("stopped");
+
+  expect(observed.slice(afterCreate).map((script) => script.lifecycle)).toEqual([
+    "running",
+    "stopped",
+  ]);
+
+  await unsubscribed.listWorkspaceScripts(workspaceId);
+  expect(bystander).toEqual([]);
+}, 60_000);
+
+test("a workspace script exiting on its own reaches other subscribed clients", async () => {
+  await writeFile(
+    path.join(cwd, "paseo.json"),
+    JSON.stringify({
+      scripts: {
+        [SCRIPT_NAME]: {
+          type: "script",
+          command: `node -e "const fs = require('node:fs'); const timer = setInterval(() => { if (fs.existsSync('exit')) clearInterval(timer); }, 10)" && exit`,
+        },
+      },
+    }),
+  );
+
+  const observer = await connectClient();
+  await observer.fetchWorkspaces({ subscribe: {} });
+  const observed = recordScriptLifecycles(observer);
+
+  const opened = await client.openProject(cwd);
+  expect(opened.error).toBeNull();
+  await expect.poll(() => observed[0]?.lifecycle, { timeout: OBSERVE_TIMEOUT_MS }).toBe("stopped");
+  const afterCreate = observed.length;
+
+  const started = await client.startWorkspaceScriptWithStatus(opened.workspace!.id, SCRIPT_NAME);
+  expect(started.error).toBeNull();
+  await expect
+    .poll(() => observed[afterCreate]?.lifecycle, { timeout: OBSERVE_TIMEOUT_MS })
+    .toBe("running");
+  await writeFile(path.join(cwd, "exit"), "");
+  await expect
+    .poll(() => observed[afterCreate + 1], { timeout: OBSERVE_TIMEOUT_MS })
+    .toMatchObject({
+      scriptName: SCRIPT_NAME,
+      terminalId: started.script!.terminalId,
+      lifecycle: "stopped",
+      exitCode: 0,
+    });
+  expect(observed.slice(afterCreate).map((script) => script.lifecycle)).toEqual([
+    "running",
+    "stopped",
+  ]);
+}, 60_000);
+
+test("an immediately exiting script reaches observers with its final status", async () => {
+  await writeFile(
+    path.join(cwd, "paseo.json"),
+    JSON.stringify({
+      scripts: { [SCRIPT_NAME]: { type: "script", command: 'node -e "process.exit(0)" && exit' } },
+    }),
+  );
+
+  const observer = await connectClient();
+  await observer.fetchWorkspaces({ subscribe: {} });
+  const observed = recordScriptLifecycles(observer);
+
+  const opened = await client.openProject(cwd);
+  expect(opened.error).toBeNull();
+  await expect.poll(() => observed[0]?.lifecycle, { timeout: OBSERVE_TIMEOUT_MS }).toBe("stopped");
+  const afterCreate = observed.length;
+
+  const started = await client.startWorkspaceScriptWithStatus(opened.workspace!.id, SCRIPT_NAME);
+  expect(started.error).toBeNull();
+  expect(started.script!.terminalId).toEqual(expect.any(String));
+  await expect
+    .poll(() => observed.slice(afterCreate).find((script) => script.lifecycle === "stopped"), {
+      timeout: OBSERVE_TIMEOUT_MS,
+    })
+    .toMatchObject({
+      scriptName: SCRIPT_NAME,
+      terminalId: started.script!.terminalId,
+      lifecycle: "stopped",
+      exitCode: 0,
+    });
+}, 60_000);
