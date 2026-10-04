@@ -37,6 +37,7 @@ export function useAgentAttentionClear({
 }: UseAgentAttentionClearParams): AgentAttentionClearController {
   const [isAppVisible, setIsAppVisible] = useState<boolean>(() => getIsAppActivelyVisible());
   const deferredFocusEntryClearRef = useRef(false);
+  const awaitingAttentionTokenRef = useRef<string | null>(null);
   const prevRequiresAttentionRef = useRef(Boolean(requiresAttention));
   const prevActivelyViewedRef = useRef(isScreenFocused && getIsAppActivelyVisible());
   const prevScreenFocusedRef = useRef(false);
@@ -60,12 +61,27 @@ export function useAgentAttentionClear({
       ) {
         return;
       }
+      // COMPAT(agentAttentionObservedClear): unreleased, remove after 2027-04-03.
+      // A daemon without the capability sends no token and clears whatever is current.
+      if (client.getLastServerInfoMessage()?.features?.agentAttentionObservedClear !== true) {
+        deferredFocusEntryClearRef.current = false;
+        client.clearAgentAttention(resolvedAgentId).catch(() => {});
+        return;
+      }
+      // An agent restored from the local cache has no token until its first live
+      // snapshot. Clearing without one would acknowledge attention this screen
+      // never showed, so wait for the token instead.
+      if (!attentionToken) {
+        awaitingAttentionTokenRef.current = resolvedAgentId;
+        return;
+      }
       deferredFocusEntryClearRef.current = false;
-      // Name the attention this screen saw so the daemon keeps any raised since.
-      const observedAttentionTokens = attentionToken
-        ? { [resolvedAgentId]: attentionToken }
-        : undefined;
-      client.clearAgentAttention(resolvedAgentId, { observedAttentionTokens }).catch(() => {});
+      awaitingAttentionTokenRef.current = null;
+      client
+        .clearAgentAttention(resolvedAgentId, {
+          observedAttentionTokens: { [resolvedAgentId]: attentionToken },
+        })
+        .catch(() => {});
     },
     [agentId, attentionReason, attentionToken, client, isConnected, requiresAttention],
   );
@@ -98,8 +114,21 @@ export function useAgentAttentionClear({
   useEffect(() => {
     if (!requiresAttention) {
       deferredFocusEntryClearRef.current = false;
+      awaitingAttentionTokenRef.current = null;
     }
   }, [requiresAttention]);
+
+  useEffect(() => {
+    if (!attentionToken || awaitingAttentionTokenRef.current === null) {
+      return;
+    }
+    const awaitedAgentId = awaitingAttentionTokenRef.current;
+    awaitingAttentionTokenRef.current = null;
+    // The live snapshot counts as seen only if this agent is still on screen.
+    if (awaitedAgentId === agentId?.trim() && isScreenFocused && isAppVisible) {
+      clearAttention("focus-entry");
+    }
+  }, [agentId, attentionToken, clearAttention, isAppVisible, isScreenFocused]);
 
   useEffect(() => {
     const isActivelyViewed = isScreenFocused && isAppVisible;

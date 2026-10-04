@@ -178,6 +178,11 @@ lands while the agent is already unread; the reason, the timestamp, and the noti
 of the first. "Mark as read" (`workspace.clear_attention`) and a clear that names no token
 acknowledge whatever is current.
 
+The focus flow never sends a tokenless clear to a daemon that advertises
+`agentAttentionObservedClear`. An agent restored from the app's local cache has no token until its
+first live snapshot, so the clear waits for that snapshot and runs only if the agent is still on
+screen.
+
 ## The subagents track
 
 The track is a pill at the foot of an agent's pane (`packages/app/src/subagents/track.tsx`): a count you can read at a glance, and a panel behind it — a popover on wide screens, a sheet on compact ones — holding the rows. It floats over the transcript rather than sitting in a band above the composer, so the timeline scrolls underneath it; `packages/app/src/panels/agent-tracks.tsx` owns that placement, and the pill frame is shared with the task list in `packages/app/src/composer/tracks.tsx`.

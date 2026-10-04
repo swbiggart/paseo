@@ -8390,6 +8390,62 @@ test("an unread record stored without an attention token is acknowledged by its 
   expect(manager.getAgent(created.id)?.attention).toEqual({ requiresAttention: false });
 });
 
+test("a finish after loading an unread record stored without an attention token is not covered by its timestamp", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-attention-legacy-newer-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const manager = new AgentManager({
+    clients: { codex: new TestAgentClient() },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000143",
+  });
+  const created = await manager.createAgent(
+    { provider: "codex", cwd: workdir, title: "Legacy newer event test" },
+    undefined,
+    { workspaceId: undefined },
+  );
+  await manager.runAgent(created.id, "first turn");
+  await manager.closeAgent(created.id);
+  const stored = (await storage.get(created.id))!;
+  const legacyRecord: StoredAgentRecord = { ...stored, attentionToken: undefined };
+  await storage.upsert(legacyRecord);
+  const legacyToken = buildStoredAgentPayload(
+    legacyRecord,
+    manager.getRegisteredProviderIds(),
+  ).attentionToken!;
+  expect(legacyToken).toBe(stored.attentionTimestamp);
+
+  await ensureAgentLoaded(created.id, {
+    agentManager: manager,
+    agentStorage: storage,
+    logger,
+  });
+
+  // A finish lands while the legacy attention is still unread.
+  await manager.runAgent(created.id, "second turn");
+  await manager.flush();
+  const whileUnread = toAgentPayload(manager.getAgent(created.id)!);
+  expect(whileUnread).toMatchObject({
+    requiresAttention: true,
+    attentionTimestamp: stored.attentionTimestamp,
+  });
+  expect(whileUnread.attentionToken).not.toBe(legacyToken);
+  expect((await storage.get(created.id))?.attentionToken).toBe(whileUnread.attentionToken);
+
+  await manager.clearAgentAttention(created.id, { observedAttentionToken: legacyToken });
+  expect(manager.getAgent(created.id)?.attention.requiresAttention).toBe(true);
+
+  // The same holds once that attention is read and another finish raises a new one.
+  await manager.clearAgentAttention(created.id, {
+    observedAttentionToken: whileUnread.attentionToken!,
+  });
+  expect(manager.getAgent(created.id)?.attention).toEqual({ requiresAttention: false });
+  await manager.runAgent(created.id, "third turn");
+
+  await manager.clearAgentAttention(created.id, { observedAttentionToken: legacyToken });
+  expect(manager.getAgent(created.id)?.attention.requiresAttention).toBe(true);
+});
+
 test("streamAgent clears pending run when startTurn fails before a turn id exists", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-start-turn-failure-"));
   const storagePath = join(workdir, "agents");
