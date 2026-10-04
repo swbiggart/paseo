@@ -367,9 +367,6 @@ export type AttentionState =
       requiresAttention: true;
       attentionReason: "finished" | "error" | "permission";
       attentionTimestamp: Date;
-      // Opaque. Replaced by every finish or failure, including one that lands
-      // while this attention is still unread, so an acknowledgment names the
-      // exact event it saw. Reason and timestamp stay those of the first event.
       attentionToken: string;
     };
 
@@ -2127,8 +2124,6 @@ export class AgentManager {
     if (!agent.attention.requiresAttention) {
       return;
     }
-    // A caller that names the attention it observed acknowledges only that
-    // attention. Anything raised since then stays unread.
     const observedAttentionToken = options?.observedAttentionToken;
     if (
       observedAttentionToken !== undefined &&
@@ -4872,9 +4867,7 @@ export class AgentManager {
       return;
     }
 
-    // Already unread: keep the first event's reason and timestamp and send no
-    // second notification. Only the token moves, so acknowledging the earlier
-    // event does not cover this one.
+    // Already requires attention: only the token changes
     if (agent.attention.requiresAttention) {
       agent.attention = { ...agent.attention, attentionToken: randomUUID() };
       return;

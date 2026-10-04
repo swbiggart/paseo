@@ -62,15 +62,11 @@ export function useAgentAttentionClear({
         return;
       }
       // COMPAT(agentAttentionObservedClear): unreleased, remove after 2027-04-03.
-      // A daemon without the capability sends no token and clears whatever is current.
       if (client.getLastServerInfoMessage()?.features?.agentAttentionObservedClear !== true) {
         deferredFocusEntryClearRef.current = false;
         client.clearAgentAttention(resolvedAgentId).catch(() => {});
         return;
       }
-      // An agent restored from the local cache has no token until its first live
-      // snapshot. Clearing without one would acknowledge attention this screen
-      // never showed, so wait for the token instead.
       if (!attentionToken) {
         awaitingAttentionTokenRef.current = resolvedAgentId;
         return;
@@ -124,7 +120,6 @@ export function useAgentAttentionClear({
     }
     const awaitedAgentId = awaitingAttentionTokenRef.current;
     awaitingAttentionTokenRef.current = null;
-    // The live snapshot counts as seen only if this agent is still on screen.
     if (awaitedAgentId === agentId?.trim() && isScreenFocused && isAppVisible) {
       clearAttention("focus-entry");
     }

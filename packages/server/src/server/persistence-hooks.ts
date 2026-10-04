@@ -149,10 +149,7 @@ export function extractTimestamps(record: StoredAgentRecord): {
   };
 }
 
-/**
- * Records written before attention tokens existed have none. Their timestamp stands in, so
- * the stored payload and the loaded agent name the same attention.
- */
+/** Records written before attention tokens existed fall back to their timestamp. */
 export function resolveStoredAttentionToken(record: StoredAgentRecord): string | null {
   if (!record.requiresAttention) {
     return null;
