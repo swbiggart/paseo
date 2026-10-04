@@ -16,6 +16,7 @@ interface UseAgentAttentionClearParams {
   isConnected: boolean;
   requiresAttention: boolean | null | undefined;
   attentionReason: AttentionReason;
+  attentionToken: string | null | undefined;
   isScreenFocused: boolean;
 }
 
@@ -31,10 +32,12 @@ export function useAgentAttentionClear({
   isConnected,
   requiresAttention,
   attentionReason,
+  attentionToken,
   isScreenFocused,
 }: UseAgentAttentionClearParams): AgentAttentionClearController {
   const [isAppVisible, setIsAppVisible] = useState<boolean>(() => getIsAppActivelyVisible());
   const deferredFocusEntryClearRef = useRef(false);
+  const awaitingAttentionTokenRef = useRef<string | null>(null);
   const prevRequiresAttentionRef = useRef(Boolean(requiresAttention));
   const prevActivelyViewedRef = useRef(isScreenFocused && getIsAppActivelyVisible());
   const prevScreenFocusedRef = useRef(false);
@@ -58,10 +61,25 @@ export function useAgentAttentionClear({
       ) {
         return;
       }
+      // COMPAT(agentAttentionObservedClear): unreleased, remove after 2027-04-03.
+      if (client.getLastServerInfoMessage()?.features?.agentAttentionObservedClear !== true) {
+        deferredFocusEntryClearRef.current = false;
+        client.clearAgentAttention(resolvedAgentId).catch(() => {});
+        return;
+      }
+      if (!attentionToken) {
+        awaitingAttentionTokenRef.current = resolvedAgentId;
+        return;
+      }
       deferredFocusEntryClearRef.current = false;
-      client.clearAgentAttention(resolvedAgentId).catch(() => {});
+      awaitingAttentionTokenRef.current = null;
+      client
+        .clearAgentAttention(resolvedAgentId, {
+          observedAttentionTokens: { [resolvedAgentId]: attentionToken },
+        })
+        .catch(() => {});
     },
-    [agentId, attentionReason, client, isConnected, requiresAttention],
+    [agentId, attentionReason, attentionToken, client, isConnected, requiresAttention],
   );
 
   useEffect(() => {
@@ -92,8 +110,20 @@ export function useAgentAttentionClear({
   useEffect(() => {
     if (!requiresAttention) {
       deferredFocusEntryClearRef.current = false;
+      awaitingAttentionTokenRef.current = null;
     }
   }, [requiresAttention]);
+
+  useEffect(() => {
+    if (!attentionToken || awaitingAttentionTokenRef.current === null) {
+      return;
+    }
+    const awaitedAgentId = awaitingAttentionTokenRef.current;
+    awaitingAttentionTokenRef.current = null;
+    if (awaitedAgentId === agentId?.trim() && isScreenFocused && isAppVisible) {
+      clearAttention("focus-entry");
+    }
+  }, [agentId, attentionToken, clearAttention, isAppVisible, isScreenFocused]);
 
   useEffect(() => {
     const isActivelyViewed = isScreenFocused && isAppVisible;

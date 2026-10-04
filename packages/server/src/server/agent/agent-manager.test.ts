@@ -15,7 +15,7 @@ import {
 } from "./agent-manager.js";
 import { AgentStorage } from "./agent-storage.js";
 import { InMemoryAgentTimelineStore } from "./agent-timeline-store.js";
-import { toAgentPayload } from "./agent-projections.js";
+import { buildStoredAgentPayload, toAgentPayload } from "./agent-projections.js";
 import { projectTimelineRows } from "./timeline-projection.js";
 import { getOpenAgentTabLabel, PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import { formatSystemNotificationPrompt, startAgentRun } from "./agent-prompt.js";
@@ -8070,6 +8070,380 @@ test("clearAgentAttention on errored agent stays cleared until a new error trans
   expect(persistedAfterSecondFailure?.lastStatus).toBe("error");
   expect(persistedAfterSecondFailure?.requiresAttention).toBe(true);
   expect(persistedAfterSecondFailure?.attentionReason).toBe("error");
+});
+
+test("clearAgentAttention keeps attention raised after the one the caller observed", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-attention-stale-clear-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const manager = new AgentManager({
+    clients: { codex: new TestAgentClient() },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000135",
+  });
+  const agent = await manager.createAgent(
+    { provider: "codex", cwd: workdir, title: "Stale clear test" },
+    undefined,
+    { workspaceId: undefined },
+  );
+
+  await manager.runAgent(agent.id, "first turn");
+  const observedAttentionToken = toAgentPayload(manager.getAgent(agent.id)!).attentionToken!;
+
+  await manager.clearAgentAttention(agent.id, { observedAttentionToken });
+  expect(manager.getAgent(agent.id)?.attention).toEqual({ requiresAttention: false });
+
+  await manager.runAgent(agent.id, "second turn");
+  const newerAttention = manager.getAgent(agent.id)?.attention;
+  expect(newerAttention).toMatchObject({ requiresAttention: true, attentionReason: "finished" });
+
+  await manager.clearAgentAttention(agent.id, { observedAttentionToken });
+  await manager.flush();
+
+  expect(manager.getAgent(agent.id)?.attention).toEqual(newerAttention);
+  expect(await storage.get(agent.id)).toMatchObject({
+    requiresAttention: true,
+    attentionReason: "finished",
+    attentionToken: toAgentPayload(manager.getAgent(agent.id)!).attentionToken,
+  });
+});
+
+test("clearAgentAttention keeps a finish that landed while the observed attention was still unread", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-attention-unread-finish-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const attentionReasons: Array<"finished" | "error" | "permission"> = [];
+  const manager = new AgentManager({
+    clients: { codex: new TestAgentClient() },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000140",
+    onAgentAttention: ({ reason }) => {
+      attentionReasons.push(reason);
+    },
+  });
+  const agent = await manager.createAgent(
+    { provider: "codex", cwd: workdir, title: "Unread finish test" },
+    undefined,
+    { workspaceId: undefined },
+  );
+
+  await manager.runAgent(agent.id, "first turn");
+  const first = toAgentPayload(manager.getAgent(agent.id)!);
+
+  // Nobody read the first finish before the second one landed.
+  await manager.runAgent(agent.id, "second turn");
+  await manager.flush();
+  const second = toAgentPayload(manager.getAgent(agent.id)!);
+
+  // The unread signal the user sees is unchanged and nothing is announced twice.
+  expect(second).toMatchObject({
+    requiresAttention: true,
+    attentionReason: "finished",
+    attentionTimestamp: first.attentionTimestamp,
+  });
+  expect(attentionReasons).toEqual(["finished"]);
+  expect(second.attentionToken).not.toBe(first.attentionToken);
+  expect((await storage.get(agent.id))?.attentionToken).toBe(second.attentionToken);
+
+  await manager.clearAgentAttention(agent.id, { observedAttentionToken: first.attentionToken! });
+  expect(toAgentPayload(manager.getAgent(agent.id)!)).toMatchObject({
+    requiresAttention: true,
+    attentionToken: second.attentionToken,
+  });
+
+  await manager.clearAgentAttention(agent.id, { observedAttentionToken: second.attentionToken! });
+  expect(manager.getAgent(agent.id)?.attention).toEqual({ requiresAttention: false });
+});
+
+test("clearAgentAttention keeps a failure that landed while the observed attention was still unread", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-attention-unread-error-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+
+  class FailsSecondTurnSession extends TestAgentSession {
+    private attempt = 0;
+
+    override async startTurn(): Promise<{ turnId: string }> {
+      this.attempt += 1;
+      if (this.attempt === 1) {
+        return super.startTurn();
+      }
+      const turnId = "fail-turn";
+      setTimeout(() => {
+        this.pushEvent({ type: "turn_started", provider: this.provider, turnId });
+        this.pushEvent({ type: "turn_failed", provider: this.provider, error: "boom", turnId });
+      }, 0);
+      return { turnId };
+    }
+  }
+
+  class FailsSecondTurnClient extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      return new FailsSecondTurnSession(config);
+    }
+  }
+
+  const attentionReasons: Array<"finished" | "error" | "permission"> = [];
+  const manager = new AgentManager({
+    clients: { codex: new FailsSecondTurnClient() },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000141",
+    onAgentAttention: ({ reason }) => {
+      attentionReasons.push(reason);
+    },
+  });
+  const agent = await manager.createAgent(
+    { provider: "codex", cwd: workdir, title: "Unread error test" },
+    undefined,
+    { workspaceId: undefined },
+  );
+
+  await manager.runAgent(agent.id, "first turn");
+  const first = toAgentPayload(manager.getAgent(agent.id)!);
+
+  await expect(manager.runAgent(agent.id, "second turn")).rejects.toThrow("boom");
+  await manager.flush();
+  const second = toAgentPayload(manager.getAgent(agent.id)!);
+
+  expect(second).toMatchObject({
+    status: "error",
+    requiresAttention: true,
+    attentionReason: "finished",
+    attentionTimestamp: first.attentionTimestamp,
+  });
+  expect(attentionReasons).toEqual(["finished"]);
+  expect(second.attentionToken).not.toBe(first.attentionToken);
+
+  await manager.clearAgentAttention(agent.id, { observedAttentionToken: first.attentionToken! });
+
+  expect(toAgentPayload(manager.getAgent(agent.id)!)).toMatchObject({
+    requiresAttention: true,
+    attentionToken: second.attentionToken,
+  });
+});
+
+test("clearAgentAttention acknowledges the attention the caller observed", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-attention-observed-clear-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const manager = new AgentManager({
+    clients: { codex: new TestAgentClient() },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000136",
+  });
+  const agent = await manager.createAgent(
+    { provider: "codex", cwd: workdir, title: "Observed clear test" },
+    undefined,
+    { workspaceId: undefined },
+  );
+  await manager.runAgent(agent.id, "first turn");
+  const observedAttentionToken = toAgentPayload(manager.getAgent(agent.id)!).attentionToken!;
+
+  const states: ManagedAgent[] = [];
+  manager.subscribe(
+    (event) => {
+      if (event.type === "agent_state" && event.agent.id === agent.id) {
+        states.push(event.agent);
+      }
+    },
+    { replayState: false },
+  );
+
+  await manager.clearAgentAttention(agent.id, { observedAttentionToken });
+  await manager.flush();
+
+  expect(states.map((state) => state.attention)).toEqual([{ requiresAttention: false }]);
+  expect(await storage.get(agent.id)).toMatchObject({
+    requiresAttention: false,
+    attentionReason: null,
+    attentionTimestamp: null,
+    attentionToken: null,
+  });
+
+  // The same acknowledgment arriving again finds nothing to clear.
+  await manager.clearAgentAttention(agent.id, { observedAttentionToken });
+  expect(states).toHaveLength(1);
+});
+
+test("clearAgentAttention without an observation clears whatever attention is current", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-attention-unconditional-clear-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const manager = new AgentManager({
+    clients: { codex: new TestAgentClient() },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000138",
+  });
+  const agent = await manager.createAgent(
+    { provider: "codex", cwd: workdir, title: "Unconditional clear test" },
+    undefined,
+    { workspaceId: undefined },
+  );
+  await manager.runAgent(agent.id, "first turn");
+  expect(manager.getAgent(agent.id)?.attention.requiresAttention).toBe(true);
+
+  await manager.clearAgentAttention(agent.id);
+  await manager.flush();
+
+  expect(manager.getAgent(agent.id)?.attention).toEqual({ requiresAttention: false });
+  expect((await storage.get(agent.id))?.requiresAttention).toBe(false);
+});
+
+test("clearAgentAttention with a stale observation keeps permission attention and its pending request", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-attention-permission-clear-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+
+  class PendingPermissionSession extends TestAgentSession {
+    override async startTurn(): Promise<{ turnId: string }> {
+      const turnId = "turn-perm-pending";
+      setTimeout(() => {
+        this.pushEvent({ type: "turn_started", provider: this.provider, turnId });
+        this.pushEvent({
+          type: "permission_requested",
+          provider: this.provider,
+          request: { id: "perm-pending", provider: this.provider, kind: "tool", name: "Read file" },
+          turnId,
+        });
+      }, 0);
+      return { turnId };
+    }
+  }
+
+  class PendingPermissionClient extends TestAgentClient {
+    override async resumeSession(
+      _handle: AgentPersistenceHandle,
+      config?: Partial<AgentSessionConfig>,
+    ): Promise<AgentSession> {
+      return new PendingPermissionSession({
+        provider: this.provider,
+        cwd: config?.cwd ?? process.cwd(),
+      });
+    }
+  }
+
+  const manager = new AgentManager({
+    clients: { codex: new PendingPermissionClient() },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000139",
+  });
+  const permissionAttention = {
+    requiresAttention: true as const,
+    attentionReason: "permission" as const,
+    attentionTimestamp: new Date("2026-01-01T00:00:05.000Z"),
+    attentionToken: "permission-attention",
+  };
+  // Attention a previous daemon run persisted for a permission request.
+  const agent = await manager.resumeAgentFromPersistence(
+    { provider: "codex", sessionId: "permission-clear" },
+    { cwd: workdir },
+    undefined,
+    { attention: permissionAttention },
+  );
+
+  const stream = manager.streamAgent(agent.id, "needs permission");
+  await stream.next(); // turn_started
+  await stream.next(); // permission_requested
+
+  await manager.clearAgentAttention(agent.id, { observedAttentionToken: "earlier-attention" });
+
+  const afterStaleClear = manager.getAgent(agent.id);
+  expect(afterStaleClear?.attention).toEqual(permissionAttention);
+  expect([...(afterStaleClear?.pendingPermissions.keys() ?? [])]).toEqual(["perm-pending"]);
+
+  await manager.cancelAgentRun(agent.id);
+});
+
+test("an unread record stored without an attention token is acknowledged by its timestamp", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-attention-legacy-token-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const manager = new AgentManager({
+    clients: { codex: new TestAgentClient() },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000142",
+  });
+  const created = await manager.createAgent(
+    { provider: "codex", cwd: workdir, title: "Legacy token test" },
+    undefined,
+    { workspaceId: undefined },
+  );
+  await manager.runAgent(created.id, "first turn");
+  await manager.closeAgent(created.id);
+  const stored = (await storage.get(created.id))!;
+  const legacyRecord: StoredAgentRecord = { ...stored, attentionToken: undefined };
+  await storage.upsert(legacyRecord);
+
+  const storedPayload = buildStoredAgentPayload(legacyRecord, manager.getRegisteredProviderIds());
+  expect(storedPayload.attentionToken).toBe(stored.attentionTimestamp);
+
+  const loaded = await ensureAgentLoaded(created.id, {
+    agentManager: manager,
+    agentStorage: storage,
+    logger,
+  });
+  expect(toAgentPayload(loaded).attentionToken).toBe(storedPayload.attentionToken);
+
+  await manager.clearAgentAttention(created.id, {
+    observedAttentionToken: storedPayload.attentionToken!,
+  });
+  expect(manager.getAgent(created.id)?.attention).toEqual({ requiresAttention: false });
+});
+
+test("a finish after loading an unread record stored without an attention token is not covered by its timestamp", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-attention-legacy-newer-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const manager = new AgentManager({
+    clients: { codex: new TestAgentClient() },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000143",
+  });
+  const created = await manager.createAgent(
+    { provider: "codex", cwd: workdir, title: "Legacy newer event test" },
+    undefined,
+    { workspaceId: undefined },
+  );
+  await manager.runAgent(created.id, "first turn");
+  await manager.closeAgent(created.id);
+  const stored = (await storage.get(created.id))!;
+  const legacyRecord: StoredAgentRecord = { ...stored, attentionToken: undefined };
+  await storage.upsert(legacyRecord);
+  const legacyToken = buildStoredAgentPayload(
+    legacyRecord,
+    manager.getRegisteredProviderIds(),
+  ).attentionToken!;
+  expect(legacyToken).toBe(stored.attentionTimestamp);
+
+  await ensureAgentLoaded(created.id, {
+    agentManager: manager,
+    agentStorage: storage,
+    logger,
+  });
+
+  // A finish lands while the legacy attention is still unread.
+  await manager.runAgent(created.id, "second turn");
+  await manager.flush();
+  const whileUnread = toAgentPayload(manager.getAgent(created.id)!);
+  expect(whileUnread).toMatchObject({
+    requiresAttention: true,
+    attentionTimestamp: stored.attentionTimestamp,
+  });
+  expect(whileUnread.attentionToken).not.toBe(legacyToken);
+  expect((await storage.get(created.id))?.attentionToken).toBe(whileUnread.attentionToken);
+
+  await manager.clearAgentAttention(created.id, { observedAttentionToken: legacyToken });
+  expect(manager.getAgent(created.id)?.attention.requiresAttention).toBe(true);
+
+  // The same holds once that attention is read and another finish raises a new one.
+  await manager.clearAgentAttention(created.id, {
+    observedAttentionToken: whileUnread.attentionToken!,
+  });
+  expect(manager.getAgent(created.id)?.attention).toEqual({ requiresAttention: false });
+  await manager.runAgent(created.id, "third turn");
+
+  await manager.clearAgentAttention(created.id, { observedAttentionToken: legacyToken });
+  expect(manager.getAgent(created.id)?.attention.requiresAttention).toBe(true);
 });
 
 test("streamAgent clears pending run when startTurn fails before a turn id exists", async () => {

@@ -20,6 +20,7 @@ export function buildArchivedAgentRecord(
     requiresAttention: false,
     attentionReason: null,
     attentionTimestamp: null,
+    attentionToken: null,
   };
 }
 

@@ -367,6 +367,7 @@ export type AttentionState =
       requiresAttention: true;
       attentionReason: "finished" | "error" | "permission";
       attentionTimestamp: Date;
+      attentionToken: string;
     };
 
 function resolveInitialAttention(input: AttentionState | undefined): AttentionState {
@@ -377,6 +378,7 @@ function resolveInitialAttention(input: AttentionState | undefined): AttentionSt
     requiresAttention: true,
     attentionReason: input.attentionReason,
     attentionTimestamp: new Date(input.attentionTimestamp),
+    attentionToken: input.attentionToken,
   };
 }
 
@@ -2114,13 +2116,24 @@ export class AgentManager {
     this.emitState(agent);
   }
 
-  async clearAgentAttention(agentId: string): Promise<void> {
+  async clearAgentAttention(
+    agentId: string,
+    options?: { observedAttentionToken?: string },
+  ): Promise<void> {
     const agent = this.requireAgent(agentId);
-    if (agent.attention.requiresAttention) {
-      agent.attention = { requiresAttention: false };
-      await this.persistSnapshot(agent);
-      this.emitState(agent, { persist: false });
+    if (!agent.attention.requiresAttention) {
+      return;
     }
+    const observedAttentionToken = options?.observedAttentionToken;
+    if (
+      observedAttentionToken !== undefined &&
+      observedAttentionToken !== agent.attention.attentionToken
+    ) {
+      return;
+    }
+    agent.attention = { requiresAttention: false };
+    await this.persistSnapshot(agent);
+    this.emitState(agent, { persist: false });
   }
 
   async markAgentUnread(agentId: string): Promise<void> {
@@ -2137,6 +2150,7 @@ export class AgentManager {
         requiresAttention: true,
         attentionReason: "finished",
         attentionTimestamp: new Date(),
+        attentionToken: randomUUID(),
       };
       await this.persistSnapshot(liveAgent);
       this.emitState(liveAgent, { persist: false });
@@ -2158,6 +2172,7 @@ export class AgentManager {
       requiresAttention: true,
       attentionReason: "finished",
       attentionTimestamp: updatedAt,
+      attentionToken: randomUUID(),
     };
     await registry.upsert(nextRecord);
     this.dispatchStoredAgentState(nextRecord);
@@ -4841,32 +4856,30 @@ export class AgentManager {
       return;
     }
 
-    // Skip if already requires attention
-    if (agent.attention.requiresAttention) {
-      return;
-    }
-
-    // Check if agent transitioned from running to idle (finished)
+    let reason: "finished" | "error";
     if (previousStatus === "running" && currentStatus === "idle") {
-      agent.attention = {
-        requiresAttention: true,
-        attentionReason: "finished",
-        attentionTimestamp: new Date(),
-      };
-      this.broadcastAgentAttention(agent, "finished");
+      // Agent transitioned from running to idle (finished)
+      reason = "finished";
+    } else if (previousStatus !== "error" && currentStatus === "error") {
+      // Agent entered error state
+      reason = "error";
+    } else {
       return;
     }
 
-    // Check if agent entered error state
-    if (previousStatus !== "error" && currentStatus === "error") {
-      agent.attention = {
-        requiresAttention: true,
-        attentionReason: "error",
-        attentionTimestamp: new Date(),
-      };
-      this.broadcastAgentAttention(agent, "error");
+    // Already requires attention: only the token changes
+    if (agent.attention.requiresAttention) {
+      agent.attention = { ...agent.attention, attentionToken: randomUUID() };
       return;
     }
+
+    agent.attention = {
+      requiresAttention: true,
+      attentionReason: reason,
+      attentionTimestamp: new Date(),
+      attentionToken: randomUUID(),
+    };
+    this.broadcastAgentAttention(agent, reason);
   }
 
   private enqueueBackgroundPersist(agent: ManagedAgent): void {

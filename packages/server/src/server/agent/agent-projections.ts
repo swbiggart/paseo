@@ -22,6 +22,7 @@ import type { JsonValue } from "../json-utils.js";
 import {
   isStoredAgentProviderAvailable,
   resolveStoredAgentUpdatedAt,
+  resolveStoredAttentionToken,
   toAgentPersistenceHandle,
 } from "../persistence-hooks.js";
 export type { ManagedAgent };
@@ -96,6 +97,7 @@ export function toStoredAgentRecord(
     attentionTimestamp: agent.attention.requiresAttention
       ? agent.attention.attentionTimestamp.toISOString()
       : null,
+    attentionToken: agent.attention.requiresAttention ? agent.attention.attentionToken : null,
     internal: options?.internal,
     owner: agent.owner,
   } satisfies StoredAgentRecord;
@@ -155,9 +157,11 @@ export function toAgentPayload(
   if (agent.attention.requiresAttention) {
     payload.attentionReason = agent.attention.attentionReason;
     payload.attentionTimestamp = agent.attention.attentionTimestamp.toISOString();
+    payload.attentionToken = agent.attention.attentionToken;
   } else {
     payload.attentionReason = null;
     payload.attentionTimestamp = null;
+    payload.attentionToken = null;
   }
 
   return payload;
@@ -246,6 +250,7 @@ export function buildStoredAgentPayload(
     requiresAttention: record.requiresAttention ?? false,
     attentionReason: record.attentionReason ?? null,
     attentionTimestamp: record.attentionTimestamp ?? null,
+    attentionToken: resolveStoredAttentionToken(record),
     archivedAt: record.archivedAt ?? null,
     labels: normalizeLabels(record.labels),
     ...(providerAvailable ? {} : { providerUnavailable: true }),

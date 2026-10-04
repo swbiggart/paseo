@@ -2024,11 +2024,15 @@ export class DaemonClient {
     }
   }
 
-  async clearAgentAttention(agentId: string | string[]): Promise<void> {
+  async clearAgentAttention(
+    agentId: string | string[],
+    options?: { observedAttentionTokens?: Record<string, string> },
+  ): Promise<void> {
     const requestId = this.createRequestId();
     const message = SessionInboundMessageSchema.parse({
       type: "clear_agent_attention",
       agentId,
+      observedAttentionTokens: options?.observedAttentionTokens,
       requestId,
     });
     await this.sendRequest({

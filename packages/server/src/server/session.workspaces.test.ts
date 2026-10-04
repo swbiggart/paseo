@@ -1695,6 +1695,56 @@ test("archive emits an authoritative agent_update upsert for subscribed clients"
   });
 });
 
+test("clear agent attention passes each agent's observed attention to the manager", async () => {
+  const emitted: SessionOutboundMessage[] = [];
+  const observed = makeManagedAgent({
+    id: "agent-observed",
+    cwd: REPO_CWD,
+    lifecycle: "idle",
+    updatedAt: "2026-03-30T15:00:00.000Z",
+  });
+  const unobserved = makeManagedAgent({
+    id: "agent-unobserved",
+    cwd: REPO_CWD,
+    lifecycle: "idle",
+    updatedAt: "2026-03-30T15:00:00.000Z",
+  });
+  const liveAgents = new Map([
+    [observed.id, observed],
+    [unobserved.id, unobserved],
+  ]);
+  const clears: Array<{ agentId: string; observedAttentionToken: string | undefined }> = [];
+  const session = createSessionForWorkspaceTests({
+    onMessage: (message) => emitted.push(message),
+    agentManager: {
+      waitForAgentClose: async () => {},
+      getAgent: (agentId: string) => liveAgents.get(agentId) ?? null,
+      clearAgentAttention: async (
+        agentId: string,
+        options?: { observedAttentionToken?: string },
+      ) => {
+        clears.push({ agentId, observedAttentionToken: options?.observedAttentionToken });
+      },
+    },
+  });
+
+  await session.handleMessage({
+    type: "clear_agent_attention",
+    agentId: [observed.id, unobserved.id],
+    observedAttentionTokens: { [observed.id]: "attention-1" },
+    requestId: "req-clear",
+  });
+
+  expect(clears).toEqual([
+    { agentId: observed.id, observedAttentionToken: "attention-1" },
+    { agentId: unobserved.id, observedAttentionToken: undefined },
+  ]);
+  expect(findByType(emitted, "clear_agent_attention_response").payload).toMatchObject({
+    requestId: "req-clear",
+    agentId: [observed.id, unobserved.id],
+  });
+});
+
 test("workspace clear attention clears stored-only agents and responds", async () => {
   const emitted: SessionOutboundMessage[] = [];
   const workspace = createPersistedWorkspaceRecord({

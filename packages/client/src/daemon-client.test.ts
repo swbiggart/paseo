@@ -1661,7 +1661,7 @@ test("lists the full agent prompt index", async () => {
         requestId: "req-prompts-1",
         agentId: "agent-1",
         epoch: "epoch-1",
-        prompts: [{ seq: 1, timestamp: "2026-01-01T00:00:00.000Z", preview: "First prompt" }],
+        prompts: [{ seq: 1, timestamp: "attention-1", preview: "First prompt" }],
         error: null,
       },
     }),
@@ -3437,6 +3437,77 @@ test("marks a workspace unread through the dotted RPC", async () => {
   );
 
   await expect(markPromise).resolves.toBeUndefined();
+});
+
+test("sends the observed attention with a clear so the daemon can skip newer attention", async () => {
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const clearPromise = client.clearAgentAttention("agent-1", {
+    observedAttentionTokens: { "agent-1": "attention-1" },
+  });
+  const sent = parseSentFrame(mock.sent[0]);
+  expect(sent).toEqual({
+    type: "clear_agent_attention",
+    agentId: "agent-1",
+    observedAttentionTokens: { "agent-1": "attention-1" },
+    requestId: expect.any(String),
+  });
+
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "clear_agent_attention_response",
+      payload: { requestId: sent.requestId, agentId: "agent-1", agents: [] },
+    }),
+  );
+
+  await expect(clearPromise).resolves.toBeUndefined();
+});
+
+test("clears agent attention unconditionally when no observation is given", async () => {
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const clearPromise = client.clearAgentAttention(["agent-1", "agent-2"]);
+  const sent = parseSentFrame(mock.sent[0]);
+  expect(sent).toEqual({
+    type: "clear_agent_attention",
+    agentId: ["agent-1", "agent-2"],
+    requestId: expect.any(String),
+  });
+
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "clear_agent_attention_response",
+      payload: { requestId: sent.requestId, agentId: ["agent-1", "agent-2"], agents: [] },
+    }),
+  );
+
+  await expect(clearPromise).resolves.toBeUndefined();
 });
 
 test("searches GitHub repositories through the dotted RPC", async () => {
@@ -7314,7 +7385,7 @@ test("usage request timeout detaches its update listener", async () => {
             account: {},
             sourceId: "source",
             sourceLabel: "Source",
-            fetchedAt: "2026-01-01T00:00:00.000Z",
+            fetchedAt: "attention-1",
             report: { status: "available", windows: [] },
           },
         },

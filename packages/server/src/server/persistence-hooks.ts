@@ -149,6 +149,14 @@ export function extractTimestamps(record: StoredAgentRecord): {
   };
 }
 
+/** Records written before attention tokens existed fall back to their timestamp. */
+export function resolveStoredAttentionToken(record: StoredAgentRecord): string | null {
+  if (!record.requiresAttention) {
+    return null;
+  }
+  return record.attentionToken ?? record.attentionTimestamp ?? null;
+}
+
 /**
  * Unread state survives a resume. Attention is set by the agent finishing or failing and
  * cleared by the user reading the chat (`workspace.clear_attention`); reloading the runtime
@@ -162,6 +170,7 @@ export function extractAttention(record: StoredAgentRecord): AttentionState {
     requiresAttention: true,
     attentionReason: record.attentionReason,
     attentionTimestamp: new Date(record.attentionTimestamp),
+    attentionToken: resolveStoredAttentionToken(record) ?? record.attentionTimestamp,
   };
 }
 
