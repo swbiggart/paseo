@@ -8072,6 +8072,213 @@ test("clearAgentAttention on errored agent stays cleared until a new error trans
   expect(persistedAfterSecondFailure?.attentionReason).toBe("error");
 });
 
+test("clearAgentAttention keeps attention raised after the one the caller observed", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-attention-stale-clear-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const manager = new AgentManager({
+    clients: { codex: new TestAgentClient() },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000135",
+  });
+  const agent = await manager.createAgent(
+    { provider: "codex", cwd: workdir, title: "Stale clear test" },
+    undefined,
+    { workspaceId: undefined },
+  );
+
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    await manager.runAgent(agent.id, "first turn");
+    const observedAttentionTimestamp = toAgentPayload(
+      manager.getAgent(agent.id)!,
+    ).attentionTimestamp!;
+    expect(observedAttentionTimestamp).toBe("2026-01-01T00:00:00.000Z");
+
+    await manager.clearAgentAttention(agent.id, { observedAttentionTimestamp });
+    expect(manager.getAgent(agent.id)?.attention).toEqual({ requiresAttention: false });
+
+    vi.setSystemTime(new Date("2026-01-01T00:00:05.000Z"));
+    await manager.runAgent(agent.id, "second turn");
+    const newerAttention = {
+      requiresAttention: true,
+      attentionReason: "finished",
+      attentionTimestamp: new Date("2026-01-01T00:00:05.000Z"),
+    };
+    expect(manager.getAgent(agent.id)?.attention).toEqual(newerAttention);
+
+    await manager.clearAgentAttention(agent.id, { observedAttentionTimestamp });
+    await manager.flush();
+
+    expect(manager.getAgent(agent.id)?.attention).toEqual(newerAttention);
+    expect(await storage.get(agent.id)).toMatchObject({
+      requiresAttention: true,
+      attentionReason: "finished",
+      attentionTimestamp: "2026-01-01T00:00:05.000Z",
+    });
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("clearAgentAttention acknowledges the attention the caller observed", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-attention-observed-clear-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const manager = new AgentManager({
+    clients: { codex: new TestAgentClient() },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000136",
+  });
+  const agent = await manager.createAgent(
+    { provider: "codex", cwd: workdir, title: "Observed clear test" },
+    undefined,
+    { workspaceId: undefined },
+  );
+  await manager.runAgent(agent.id, "first turn");
+  const observedAttentionTimestamp = toAgentPayload(
+    manager.getAgent(agent.id)!,
+  ).attentionTimestamp!;
+
+  const states: ManagedAgent[] = [];
+  manager.subscribe(
+    (event) => {
+      if (event.type === "agent_state" && event.agent.id === agent.id) {
+        states.push(event.agent);
+      }
+    },
+    { replayState: false },
+  );
+
+  await manager.clearAgentAttention(agent.id, { observedAttentionTimestamp });
+  await manager.flush();
+
+  expect(states.map((state) => state.attention)).toEqual([{ requiresAttention: false }]);
+  expect(await storage.get(agent.id)).toMatchObject({
+    requiresAttention: false,
+    attentionReason: null,
+    attentionTimestamp: null,
+  });
+
+  // The same acknowledgment arriving again finds nothing to clear.
+  await manager.clearAgentAttention(agent.id, { observedAttentionTimestamp });
+  expect(states).toHaveLength(1);
+});
+
+test("clearAgentAttention ignores an observation that is not a timestamp", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-attention-invalid-clear-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const manager = new AgentManager({
+    clients: { codex: new TestAgentClient() },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000137",
+  });
+  const agent = await manager.createAgent(
+    { provider: "codex", cwd: workdir, title: "Invalid observation test" },
+    undefined,
+    { workspaceId: undefined },
+  );
+  await manager.runAgent(agent.id, "first turn");
+  const attention = manager.getAgent(agent.id)?.attention;
+  expect(attention).toMatchObject({ requiresAttention: true, attentionReason: "finished" });
+
+  await manager.clearAgentAttention(agent.id, { observedAttentionTimestamp: "not-a-date" });
+
+  expect(manager.getAgent(agent.id)?.attention).toEqual(attention);
+});
+
+test("clearAgentAttention without an observation clears whatever attention is current", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-attention-unconditional-clear-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const manager = new AgentManager({
+    clients: { codex: new TestAgentClient() },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000138",
+  });
+  const agent = await manager.createAgent(
+    { provider: "codex", cwd: workdir, title: "Unconditional clear test" },
+    undefined,
+    { workspaceId: undefined },
+  );
+  await manager.runAgent(agent.id, "first turn");
+  expect(manager.getAgent(agent.id)?.attention.requiresAttention).toBe(true);
+
+  await manager.clearAgentAttention(agent.id);
+  await manager.flush();
+
+  expect(manager.getAgent(agent.id)?.attention).toEqual({ requiresAttention: false });
+  expect((await storage.get(agent.id))?.requiresAttention).toBe(false);
+});
+
+test("clearAgentAttention with a stale observation keeps permission attention and its pending request", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-attention-permission-clear-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+
+  class PendingPermissionSession extends TestAgentSession {
+    override async startTurn(): Promise<{ turnId: string }> {
+      const turnId = "turn-perm-pending";
+      setTimeout(() => {
+        this.pushEvent({ type: "turn_started", provider: this.provider, turnId });
+        this.pushEvent({
+          type: "permission_requested",
+          provider: this.provider,
+          request: { id: "perm-pending", provider: this.provider, kind: "tool", name: "Read file" },
+          turnId,
+        });
+      }, 0);
+      return { turnId };
+    }
+  }
+
+  class PendingPermissionClient extends TestAgentClient {
+    override async resumeSession(
+      _handle: AgentPersistenceHandle,
+      config?: Partial<AgentSessionConfig>,
+    ): Promise<AgentSession> {
+      return new PendingPermissionSession({
+        provider: this.provider,
+        cwd: config?.cwd ?? process.cwd(),
+      });
+    }
+  }
+
+  const manager = new AgentManager({
+    clients: { codex: new PendingPermissionClient() },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000139",
+  });
+  const permissionAttention = {
+    requiresAttention: true as const,
+    attentionReason: "permission" as const,
+    attentionTimestamp: new Date("2026-01-01T00:00:05.000Z"),
+  };
+  // Attention a previous daemon run persisted for a permission request.
+  const agent = await manager.resumeAgentFromPersistence(
+    { provider: "codex", sessionId: "permission-clear" },
+    { cwd: workdir },
+    undefined,
+    { attention: permissionAttention },
+  );
+
+  const stream = manager.streamAgent(agent.id, "needs permission");
+  await stream.next(); // turn_started
+  await stream.next(); // permission_requested
+
+  await manager.clearAgentAttention(agent.id, {
+    observedAttentionTimestamp: "2026-01-01T00:00:00.000Z",
+  });
+
+  const afterStaleClear = manager.getAgent(agent.id);
+  expect(afterStaleClear?.attention).toEqual(permissionAttention);
+  expect([...(afterStaleClear?.pendingPermissions.keys() ?? [])]).toEqual(["perm-pending"]);
+
+  await manager.cancelAgentRun(agent.id);
+});
+
 test("streamAgent clears pending run when startTurn fails before a turn id exists", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-start-turn-failure-"));
   const storagePath = join(workdir, "agents");

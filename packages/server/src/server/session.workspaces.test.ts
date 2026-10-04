@@ -1695,6 +1695,56 @@ test("archive emits an authoritative agent_update upsert for subscribed clients"
   });
 });
 
+test("clear agent attention passes each agent's observed attention to the manager", async () => {
+  const emitted: SessionOutboundMessage[] = [];
+  const observed = makeManagedAgent({
+    id: "agent-observed",
+    cwd: REPO_CWD,
+    lifecycle: "idle",
+    updatedAt: "2026-03-30T15:00:00.000Z",
+  });
+  const unobserved = makeManagedAgent({
+    id: "agent-unobserved",
+    cwd: REPO_CWD,
+    lifecycle: "idle",
+    updatedAt: "2026-03-30T15:00:00.000Z",
+  });
+  const liveAgents = new Map([
+    [observed.id, observed],
+    [unobserved.id, unobserved],
+  ]);
+  const clears: Array<{ agentId: string; observedAttentionTimestamp: string | undefined }> = [];
+  const session = createSessionForWorkspaceTests({
+    onMessage: (message) => emitted.push(message),
+    agentManager: {
+      waitForAgentClose: async () => {},
+      getAgent: (agentId: string) => liveAgents.get(agentId) ?? null,
+      clearAgentAttention: async (
+        agentId: string,
+        options?: { observedAttentionTimestamp?: string },
+      ) => {
+        clears.push({ agentId, observedAttentionTimestamp: options?.observedAttentionTimestamp });
+      },
+    },
+  });
+
+  await session.handleMessage({
+    type: "clear_agent_attention",
+    agentId: [observed.id, unobserved.id],
+    observedAttentionTimestamps: { [observed.id]: "2026-03-30T15:00:00.000Z" },
+    requestId: "req-clear",
+  });
+
+  expect(clears).toEqual([
+    { agentId: observed.id, observedAttentionTimestamp: "2026-03-30T15:00:00.000Z" },
+    { agentId: unobserved.id, observedAttentionTimestamp: undefined },
+  ]);
+  expect(findByType(emitted, "clear_agent_attention_response").payload).toMatchObject({
+    requestId: "req-clear",
+    agentId: [observed.id, unobserved.id],
+  });
+});
+
 test("workspace clear attention clears stored-only agents and responds", async () => {
   const emitted: SessionOutboundMessage[] = [];
   const workspace = createPersistedWorkspaceRecord({

@@ -2114,13 +2114,26 @@ export class AgentManager {
     this.emitState(agent);
   }
 
-  async clearAgentAttention(agentId: string): Promise<void> {
+  async clearAgentAttention(
+    agentId: string,
+    options?: { observedAttentionTimestamp?: string },
+  ): Promise<void> {
     const agent = this.requireAgent(agentId);
-    if (agent.attention.requiresAttention) {
-      agent.attention = { requiresAttention: false };
-      await this.persistSnapshot(agent);
-      this.emitState(agent, { persist: false });
+    if (!agent.attention.requiresAttention) {
+      return;
     }
+    // A caller that names the attention it observed acknowledges only that
+    // attention. Anything raised since then stays unread.
+    const observedAttentionTimestamp = options?.observedAttentionTimestamp;
+    if (
+      observedAttentionTimestamp !== undefined &&
+      Date.parse(observedAttentionTimestamp) !== agent.attention.attentionTimestamp.getTime()
+    ) {
+      return;
+    }
+    agent.attention = { requiresAttention: false };
+    await this.persistSnapshot(agent);
+    this.emitState(agent, { persist: false });
   }
 
   async markAgentUnread(agentId: string): Promise<void> {

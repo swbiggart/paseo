@@ -2753,7 +2753,7 @@ export class Session {
       case "agent_permission_response":
         return this.handleAgentPermissionResponse(msg.agentId, msg.requestId, msg.response);
       case "clear_agent_attention":
-        return this.handleClearAgentAttention(msg.agentId, msg.requestId);
+        return this.handleClearAgentAttention(msg);
       default:
         return undefined;
     }
@@ -4829,9 +4829,9 @@ export class Session {
    * Handle clearing agent attention flag
    */
   private async handleClearAgentAttention(
-    agentId: string | string[],
-    requestId?: string,
+    request: Extract<SessionInboundMessage, { type: "clear_agent_attention" }>,
   ): Promise<void> {
+    const { agentId, requestId, observedAttentionTimestamps } = request;
     const agentIds = Array.isArray(agentId) ? agentId : [agentId];
 
     try {
@@ -4844,7 +4844,13 @@ export class Session {
           }),
         ),
       );
-      await Promise.all(agentIds.map((id) => this.agentManager.clearAgentAttention(id)));
+      await Promise.all(
+        agentIds.map((id) =>
+          this.agentManager.clearAgentAttention(id, {
+            observedAttentionTimestamp: observedAttentionTimestamps?.[id],
+          }),
+        ),
+      );
       if (requestId) {
         const agents = (
           await Promise.all(
