@@ -28,19 +28,17 @@ describe("useAgentAttentionClear", () => {
         isConnected: true,
         requiresAttention: true,
         attentionReason: "finished",
-        attentionTimestamp: "2026-01-01T00:00:00.000Z",
+        attentionToken: "attention-1",
         isScreenFocused: false,
       }),
     );
 
     result.current.clearOnInputFocus();
 
-    expect(calls).toEqual([
-      ["agent-1", { observedAttentionTimestamps: { "agent-1": "2026-01-01T00:00:00.000Z" } }],
-    ]);
+    expect(calls).toEqual([["agent-1", { observedAttentionTokens: { "agent-1": "attention-1" } }]]);
   });
 
-  it("clears without an observation when the attention has no timestamp", () => {
+  it("clears without an observation when the snapshot has no attention token", () => {
     const { client, calls } = createRecordingClient();
     const { result } = renderHook(() =>
       useAgentAttentionClear({
@@ -49,14 +47,14 @@ describe("useAgentAttentionClear", () => {
         isConnected: true,
         requiresAttention: true,
         attentionReason: "finished",
-        attentionTimestamp: null,
+        attentionToken: null,
         isScreenFocused: false,
       }),
     );
 
     result.current.clearOnInputFocus();
 
-    expect(calls).toEqual([["agent-1", { observedAttentionTimestamps: undefined }]]);
+    expect(calls).toEqual([["agent-1", { observedAttentionTokens: undefined }]]);
   });
 
   it("does not clear permission attention", () => {
@@ -68,7 +66,7 @@ describe("useAgentAttentionClear", () => {
         isConnected: true,
         requiresAttention: true,
         attentionReason: "permission",
-        attentionTimestamp: "2026-01-01T00:00:00.000Z",
+        attentionToken: "attention-1",
         isScreenFocused: false,
       }),
     );

@@ -835,6 +835,10 @@ export const AgentSnapshotPayloadSchema = z.object({
   requiresAttention: z.boolean().optional(),
   attentionReason: z.enum(["finished", "error", "permission"]).nullable().optional(),
   attentionTimestamp: z.string().nullable().optional(),
+  // Opaque id of the latest finish or failure behind the current attention. It
+  // changes when a later one lands while the agent is still unread; the reason
+  // and timestamp do not.
+  attentionToken: z.string().nullable().optional(),
   archivedAt: z.string().nullable().optional(),
   providerUnavailable: z.boolean().optional(),
 });
@@ -2844,11 +2848,11 @@ export const FileUploadRequestSchema = z.object({
 export const ClearAgentAttentionMessageSchema = z.object({
   type: z.literal("clear_agent_attention"),
   agentId: z.union([z.string(), z.array(z.string())]),
-  // The `attentionTimestamp` the client observed, keyed by agent id. An agent
-  // listed here is cleared only while that attention is still current; an agent
-  // left out is cleared unconditionally. Honored by daemons that advertise
-  // `server_info.features.agentAttentionObservedClear`.
-  observedAttentionTimestamps: z.record(z.string(), z.string()).optional(),
+  // The snapshot `attentionToken` the client observed, keyed by agent id. An
+  // agent listed here is cleared only while that token is still current; an
+  // agent left out is cleared unconditionally. Honored by daemons that
+  // advertise `server_info.features.agentAttentionObservedClear`.
+  observedAttentionTokens: z.record(z.string(), z.string()).optional(),
   requestId: z.string().optional(),
 });
 
@@ -3669,9 +3673,10 @@ export const ServerInfoStatusPayloadSchema = z
         workspacePinning: z.boolean().optional(),
         // COMPAT(workspaceMarkUnread): added in v0.5.0, remove after 2027-08-20.
         workspaceMarkUnread: z.boolean().optional(),
-        // COMPAT(agentAttentionObservedClear): added in v0.11.0, remove after 2027-04-03.
-        // The daemon honors `clear_agent_attention.observedAttentionTimestamps`. A daemon
-        // without it ignores the field and clears unconditionally.
+        // COMPAT(agentAttentionObservedClear): unreleased, remove after 2027-04-03.
+        // The daemon sends `attentionToken` on agent snapshots and honors
+        // `clear_agent_attention.observedAttentionTokens`. A daemon without it
+        // ignores the field and clears unconditionally.
         agentAttentionObservedClear: z.boolean().optional(),
         // COMPAT(hubRelationship): added in v0.1.X, drop the gate when floor >= v0.1.X.
         hubRelationship: z.boolean().optional(),

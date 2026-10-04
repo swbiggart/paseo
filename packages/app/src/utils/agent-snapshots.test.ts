@@ -78,6 +78,17 @@ describe("normalizeAgentSnapshot", () => {
     });
   });
 
+  it("keeps the attention token a daemon sends and maps a daemon without one to null", () => {
+    const unread = normalizeAgentSnapshot(
+      { ...createSnapshot(), requiresAttention: true, attentionToken: "attention-1" },
+      "server-1",
+    );
+    expect(unread.attentionToken).toBe("attention-1");
+    expect(projectAgentSnapshot(unread).attentionToken).toBe("attention-1");
+
+    expect(normalizeAgentSnapshot(createSnapshot(), "server-1").attentionToken).toBeNull();
+  });
+
   it("derives parentAgentId from the parent label while preserving labels", () => {
     const labels = {
       [PARENT_AGENT_ID_LABEL]: "parent-1",

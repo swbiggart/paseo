@@ -1661,7 +1661,7 @@ test("lists the full agent prompt index", async () => {
         requestId: "req-prompts-1",
         agentId: "agent-1",
         epoch: "epoch-1",
-        prompts: [{ seq: 1, timestamp: "2026-01-01T00:00:00.000Z", preview: "First prompt" }],
+        prompts: [{ seq: 1, timestamp: "attention-1", preview: "First prompt" }],
         error: null,
       },
     }),
@@ -3456,13 +3456,13 @@ test("sends the observed attention with a clear so the daemon can skip newer att
   await connectPromise;
 
   const clearPromise = client.clearAgentAttention("agent-1", {
-    observedAttentionTimestamps: { "agent-1": "2026-01-01T00:00:00.000Z" },
+    observedAttentionTokens: { "agent-1": "attention-1" },
   });
   const sent = parseSentFrame(mock.sent[0]);
   expect(sent).toEqual({
     type: "clear_agent_attention",
     agentId: "agent-1",
-    observedAttentionTimestamps: { "agent-1": "2026-01-01T00:00:00.000Z" },
+    observedAttentionTokens: { "agent-1": "attention-1" },
     requestId: expect.any(String),
   });
 
@@ -7385,7 +7385,7 @@ test("usage request timeout detaches its update listener", async () => {
             account: {},
             sourceId: "source",
             sourceLabel: "Source",
-            fetchedAt: "2026-01-01T00:00:00.000Z",
+            fetchedAt: "attention-1",
             report: { status: "available", windows: [] },
           },
         },

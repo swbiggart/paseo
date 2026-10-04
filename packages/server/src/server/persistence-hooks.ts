@@ -150,6 +150,17 @@ export function extractTimestamps(record: StoredAgentRecord): {
 }
 
 /**
+ * Records written before attention tokens existed have none. Their timestamp stands in, so
+ * the stored payload and the loaded agent name the same attention.
+ */
+export function resolveStoredAttentionToken(record: StoredAgentRecord): string | null {
+  if (!record.requiresAttention) {
+    return null;
+  }
+  return record.attentionToken ?? record.attentionTimestamp ?? null;
+}
+
+/**
  * Unread state survives a resume. Attention is set by the agent finishing or failing and
  * cleared by the user reading the chat (`workspace.clear_attention`); reloading the runtime
  * is neither, so a resumed agent that drops it silently marks the chat read.
@@ -162,6 +173,7 @@ export function extractAttention(record: StoredAgentRecord): AttentionState {
     requiresAttention: true,
     attentionReason: record.attentionReason,
     attentionTimestamp: new Date(record.attentionTimestamp),
+    attentionToken: resolveStoredAttentionToken(record) ?? record.attentionTimestamp,
   };
 }
 

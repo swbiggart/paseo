@@ -171,10 +171,12 @@ untouched. Forging either makes a background resume look like the user read a wo
 agent worked in it just now, which rewrites the sidebar timestamp permanently — persisted
 `updatedAt` is what workspace `statusEnteredAt` is re-derived from on the next daemon start.
 
-The focus flow sends `clear_agent_attention` with the `attentionTimestamp` it saw. The daemon clears
-only that attention, so attention raised between the client's snapshot and the request stays unread.
-"Mark as read" (`workspace.clear_attention`) and a clear that names no observation acknowledge
-whatever is current.
+The focus flow sends `clear_agent_attention` with the snapshot's `attentionToken`. The daemon clears
+only while that token is current, so a finish or failure that lands between the client's snapshot
+and the request stays unread. The token changes on every finish or failure, including one that
+lands while the agent is already unread; the reason, the timestamp, and the notification stay those
+of the first. "Mark as read" (`workspace.clear_attention`) and a clear that names no token
+acknowledge whatever is current.
 
 ## The subagents track
 

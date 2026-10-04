@@ -16,7 +16,7 @@ interface UseAgentAttentionClearParams {
   isConnected: boolean;
   requiresAttention: boolean | null | undefined;
   attentionReason: AttentionReason;
-  attentionTimestamp: string | null | undefined;
+  attentionToken: string | null | undefined;
   isScreenFocused: boolean;
 }
 
@@ -32,7 +32,7 @@ export function useAgentAttentionClear({
   isConnected,
   requiresAttention,
   attentionReason,
-  attentionTimestamp,
+  attentionToken,
   isScreenFocused,
 }: UseAgentAttentionClearParams): AgentAttentionClearController {
   const [isAppVisible, setIsAppVisible] = useState<boolean>(() => getIsAppActivelyVisible());
@@ -62,12 +62,12 @@ export function useAgentAttentionClear({
       }
       deferredFocusEntryClearRef.current = false;
       // Name the attention this screen saw so the daemon keeps any raised since.
-      const observedAttentionTimestamps = attentionTimestamp
-        ? { [resolvedAgentId]: attentionTimestamp }
+      const observedAttentionTokens = attentionToken
+        ? { [resolvedAgentId]: attentionToken }
         : undefined;
-      client.clearAgentAttention(resolvedAgentId, { observedAttentionTimestamps }).catch(() => {});
+      client.clearAgentAttention(resolvedAgentId, { observedAttentionTokens }).catch(() => {});
     },
-    [agentId, attentionReason, attentionTimestamp, client, isConnected, requiresAttention],
+    [agentId, attentionReason, attentionToken, client, isConnected, requiresAttention],
   );
 
   useEffect(() => {

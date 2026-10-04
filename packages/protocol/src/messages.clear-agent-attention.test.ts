@@ -1,19 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { ClearAgentAttentionMessageSchema, SessionInboundMessageSchema } from "./messages";
 
-describe("clear_agent_attention observedAttentionTimestamps", () => {
+describe("clear_agent_attention observedAttentionTokens", () => {
   it("accepts the attention a client observed for each agent", () => {
     const parsed = SessionInboundMessageSchema.parse({
       type: "clear_agent_attention",
       agentId: ["agent-1", "agent-2"],
-      observedAttentionTimestamps: { "agent-1": "2026-01-01T00:00:00.000Z" },
+      observedAttentionTokens: { "agent-1": "attention-1" },
       requestId: "req-1",
     });
 
     expect(parsed).toEqual({
       type: "clear_agent_attention",
       agentId: ["agent-1", "agent-2"],
-      observedAttentionTimestamps: { "agent-1": "2026-01-01T00:00:00.000Z" },
+      observedAttentionTokens: { "agent-1": "attention-1" },
       requestId: "req-1",
     });
   });

@@ -4831,7 +4831,7 @@ export class Session {
   private async handleClearAgentAttention(
     request: Extract<SessionInboundMessage, { type: "clear_agent_attention" }>,
   ): Promise<void> {
-    const { agentId, requestId, observedAttentionTimestamps } = request;
+    const { agentId, requestId, observedAttentionTokens } = request;
     const agentIds = Array.isArray(agentId) ? agentId : [agentId];
 
     try {
@@ -4847,7 +4847,7 @@ export class Session {
       await Promise.all(
         agentIds.map((id) =>
           this.agentManager.clearAgentAttention(id, {
-            observedAttentionTimestamp: observedAttentionTimestamps?.[id],
+            observedAttentionToken: observedAttentionTokens?.[id],
           }),
         ),
       );
@@ -7465,6 +7465,7 @@ export class Session {
             requiresAttention: false,
             attentionReason: null,
             attentionTimestamp: null,
+            attentionToken: null,
           };
           await this.agentStorage.upsert(nextRecord);
           const agent = this.buildStoredAgentPayload(nextRecord);

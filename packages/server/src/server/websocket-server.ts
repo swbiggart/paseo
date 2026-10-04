@@ -1897,7 +1897,7 @@ export class VoiceAssistantWebSocketServer {
         workspacePinning: true,
         // COMPAT(workspaceMarkUnread): added in v0.5.0, remove after 2027-08-20.
         workspaceMarkUnread: true,
-        // COMPAT(agentAttentionObservedClear): added in v0.11.0, remove after 2027-04-03.
+        // COMPAT(agentAttentionObservedClear): unreleased, remove after 2027-04-03.
         agentAttentionObservedClear: true,
         // COMPAT(hubRelationship): added in v0.1.X, drop the gate when floor >= v0.1.X.
         hubRelationship: true,

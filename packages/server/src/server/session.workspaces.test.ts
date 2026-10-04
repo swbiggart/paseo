@@ -1713,7 +1713,7 @@ test("clear agent attention passes each agent's observed attention to the manage
     [observed.id, observed],
     [unobserved.id, unobserved],
   ]);
-  const clears: Array<{ agentId: string; observedAttentionTimestamp: string | undefined }> = [];
+  const clears: Array<{ agentId: string; observedAttentionToken: string | undefined }> = [];
   const session = createSessionForWorkspaceTests({
     onMessage: (message) => emitted.push(message),
     agentManager: {
@@ -1721,9 +1721,9 @@ test("clear agent attention passes each agent's observed attention to the manage
       getAgent: (agentId: string) => liveAgents.get(agentId) ?? null,
       clearAgentAttention: async (
         agentId: string,
-        options?: { observedAttentionTimestamp?: string },
+        options?: { observedAttentionToken?: string },
       ) => {
-        clears.push({ agentId, observedAttentionTimestamp: options?.observedAttentionTimestamp });
+        clears.push({ agentId, observedAttentionToken: options?.observedAttentionToken });
       },
     },
   });
@@ -1731,13 +1731,13 @@ test("clear agent attention passes each agent's observed attention to the manage
   await session.handleMessage({
     type: "clear_agent_attention",
     agentId: [observed.id, unobserved.id],
-    observedAttentionTimestamps: { [observed.id]: "2026-03-30T15:00:00.000Z" },
+    observedAttentionTokens: { [observed.id]: "attention-1" },
     requestId: "req-clear",
   });
 
   expect(clears).toEqual([
-    { agentId: observed.id, observedAttentionTimestamp: "2026-03-30T15:00:00.000Z" },
-    { agentId: unobserved.id, observedAttentionTimestamp: undefined },
+    { agentId: observed.id, observedAttentionToken: "attention-1" },
+    { agentId: unobserved.id, observedAttentionToken: undefined },
   ]);
   expect(findByType(emitted, "clear_agent_attention_response").payload).toMatchObject({
     requestId: "req-clear",

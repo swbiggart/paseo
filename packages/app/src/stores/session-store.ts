@@ -96,6 +96,7 @@ export interface Agent {
   requiresAttention?: boolean;
   attentionReason?: "finished" | "error" | "permission" | null;
   attentionTimestamp?: Date | null;
+  attentionToken?: string | null;
   archivedAt?: Date | null;
   parentAgentId: string | null;
   labels: Record<string, string>;
